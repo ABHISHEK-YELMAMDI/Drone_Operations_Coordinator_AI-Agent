@@ -20,6 +20,12 @@ except ImportError:
     GEMINI_AVAILABLE = False
     st.warning("Google Generative AI not available. Install with: pip install google-generativeai")
 
+# Configure Gemini API from secrets
+if GEMINI_AVAILABLE and 'GEMINI_API_KEY' in st.secrets:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+elif GEMINI_AVAILABLE:
+    st.warning("GEMINI_API_KEY not found in Streamlit secrets. AI Assistant will use fallback responses.")
+
 # Page configuration
 st.set_page_config(
     page_title="Drone Operations Coordinator AI Agent",
