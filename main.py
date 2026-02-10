@@ -3,8 +3,23 @@ import streamlit as st
 import pandas as pd
 import sys
 import os
+
+if "gcp_service_account" in st.secrets:
+    creds_path = st.secrets.get(
+        "GOOGLE_SHEETS_CREDENTIALS_PATH",
+        "gcp_credentials.json"
+    )
+
+    if not os.path.exists(creds_path):
+        with open(creds_path, "w") as f:
+            json.dump(dict(st.secrets["gcp_service_account"]), f)
+
+    os.environ["GOOGLE_SHEETS_CREDENTIALS_PATH"] = creds_path
+
 from datetime import datetime
 from typing import List, Dict, Any
+
+
 
 # Add modules to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -12,19 +27,6 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from modules.sheets_manager import GoogleSheetsManager
 from modules.data_models import Pilot, Drone, Mission
 
-# --- Streamlit Cloud GCP credentials bootstrap ---
-import json
-import os
-import streamlit as st
-
-if "gcp_service_account" in st.secrets:
-    creds_path = st.secrets.get("GOOGLE_SHEETS_CREDENTIALS_PATH", "gcp_credentials.json")
-
-    if not os.path.exists(creds_path):
-        with open(creds_path, "w") as f:
-            json.dump(dict(st.secrets["gcp_service_account"]), f)
-
-    os.environ["GOOGLE_SHEETS_CREDENTIALS_PATH"] = creds_path
 
 
 # Gemini imports for conversational AI
