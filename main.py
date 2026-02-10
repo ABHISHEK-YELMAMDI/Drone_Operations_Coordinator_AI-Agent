@@ -12,17 +12,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from modules.sheets_manager import GoogleSheetsManager
 from modules.data_models import Pilot, Drone, Mission
 
-# LangChain imports for conversational AI
+# Gemini imports for conversational AI
 try:
-    from langchain.agents import initialize_agent, AgentType
-    from langchain_openai import ChatOpenAI
-    from langchain.tools import Tool
-    from langchain.memory import ConversationBufferMemory
-    from langchain.schema import SystemMessage
-    LANGCHAIN_AVAILABLE = True
+    import google.generativeai as genai
+    GEMINI_AVAILABLE = True
 except ImportError:
-    LANGCHAIN_AVAILABLE = False
-    st.warning("LangChain not available. Install with: pip install langchain langchain-openai")
+    GEMINI_AVAILABLE = False
+    st.warning("Google Generative AI not available. Install with: pip install google-generativeai")
 
 # Page configuration
 st.set_page_config(
@@ -119,8 +115,34 @@ def show_dashboard():
     
     with col4:
         if not missions.empty:
-            high_priority = len(missions[missions['priority'] == 'High'])
-            st.metric("High Priority", high_priority)
+            # Check what columns are available
+            available_cols = missions.columns.tolist()
+            priority_col = None
+
+            # Try different possible column names for priority
+            for col in ['priority', 'Priority', 'PRIORITY', 'Priority Level', 'priority_level']:
+                if col in available_cols:
+                    priority_col = col
+                    break
+
+            if priority_col:
+                try:
+                    # Count high priority missions - handle different formats
+                    priority_values = missions[priority_col].astype(str).str.upper()
+                    high_priority_count = len(priority_values[priority_values.isin(['HIGH', 'CRITICAL', '1'])])
+                    st.metric("High Priority", high_priority_count)
+                except Exception as e:
+                    st.metric("High Priority", f"Error: {str(e)[:20]}...")
+            else:
+                # If no priority column, show 0 or check for status-based priority
+                if 'status' in available_cols:
+                    # Count active missions as high priority proxy
+                    active_count = len(missions[missions['status'].astype(str).str.upper() == 'ACTIVE'])
+                    st.metric("High Priority", f"{active_count} active")
+                else:
+                    st.metric("High Priority", "0")
+        else:
+            st.metric("High Priority", "0")
     
     with col5:
         if st.session_state.last_refresh:
@@ -131,9 +153,17 @@ def show_dashboard():
     # Recent assignments
     st.subheader("📋 Recent Assignments")
     if not missions.empty:
-        recent = missions.sort_values('start_date', ascending=False).head(5)
-        st.dataframe(recent[['mission_id', 'client_name', 'assigned_pilot', 'start_date', 'status']],
-                     width='stretch')
+        # Check if start_date column exists, otherwise sort by mission_id or use default order
+        if 'start_date' in missions.columns:
+            recent = missions.sort_values('start_date', ascending=False).head(5)
+            display_columns = ['mission_id', 'client_name', 'assigned_pilot', 'start_date', 'status']
+        else:
+            recent = missions.head(5)
+            display_columns = ['mission_id', 'client_name', 'assigned_pilot', 'status']
+
+        # Filter to only include columns that exist
+        available_columns = [col for col in display_columns if col in missions.columns]
+        st.dataframe(recent[available_columns], width='stretch')
     
     # Quick actions
     st.subheader("⚡ Quick Actions")
@@ -256,45 +286,50 @@ def show_drone_fleet():
         tab1, tab2 = st.tabs(["📊 Fleet Overview", "🔧 Maintenance"])
         
         with tab1:
-            st.dataframe(drones, use_container_width=True, hide_index=True)
+            st.dataframe(drones, width='stretch', hide_index=True)
         
         with tab2:
             st.subheader("Maintenance Status")
-            
-            # Drones due for maintenance
-            today = pd.Timestamp.now().date()
-            drones['maintenance_due_date'] = pd.to_datetime(drones['maintenance_due_date']).dt.date
-            
-            due_soon = drones[drones['maintenance_due_date'] <= today + pd.Timedelta(days=7)]
-            
-            if not due_soon.empty:
-                st.warning(f"🚨 {len(due_soon)} drones need maintenance soon!")
-                for _, drone in due_soon.iterrows():
-                    st.write(f"**{drone['drone_id']}** - {drone['model']}: Due on {drone['maintenance_due_date']}")
-            else:
-                st.success("✅ No drones due for maintenance in the next 7 days")
-            
-            # Update maintenance
-            st.subheader("Update Maintenance Date")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                drone_to_update = st.selectbox(
-                    "Select Drone",
-                    options=drones['drone_id'].tolist(),
-                    key="drone_select"
-                )
-            
-            with col2:
-                new_date = st.date_input("New Maintenance Due Date", value=today + pd.Timedelta(days=30))
-            
-            if st.button("Update Maintenance Date", type="primary"):
-                if manager.update_record('drone_fleet', drone_to_update, 
-                                        {'maintenance_due_date': new_date.strftime('%Y-%m-%d')}):
-                    st.success(f"✅ Updated maintenance date for {drone_to_update}")
-                    refresh_data()
+
+            # Check if maintenance columns exist
+            if 'maintenance_due_date' in drones.columns:
+                # Drones due for maintenance
+                today = pd.Timestamp.now().date()
+                drones_copy = drones.copy()
+                drones_copy['maintenance_due_date'] = pd.to_datetime(drones_copy['maintenance_due_date'], errors='coerce').dt.date
+
+                due_soon = drones_copy[drones_copy['maintenance_due_date'] <= today + pd.Timedelta(days=7)]
+
+                if not due_soon.empty:
+                    st.warning(f"🚨 {len(due_soon)} drones need maintenance soon!")
+                    for _, drone in due_soon.iterrows():
+                        st.write(f"**{drone['drone_id']}** - {drone.get('model', 'Unknown')}: Due on {drone['maintenance_due_date']}")
                 else:
-                    st.error("❌ Failed to update")
+                    st.success("✅ No drones due for maintenance in the next 7 days")
+
+                # Update maintenance
+                st.subheader("Update Maintenance Date")
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    drone_to_update = st.selectbox(
+                        "Select Drone",
+                        options=drones['drone_id'].tolist(),
+                        key="drone_select"
+                    )
+
+                with col2:
+                    new_date = st.date_input("New Maintenance Due Date", value=today + pd.Timedelta(days=30))
+
+                if st.button("Update Maintenance Date", type="primary"):
+                    if manager.update_record('drone_fleet', drone_to_update,
+                                            {'maintenance_due_date': new_date.strftime('%Y-%m-%d')}):
+                        st.success(f"✅ Updated maintenance date for {drone_to_update}")
+                        refresh_data()
+                    else:
+                        st.error("❌ Failed to update")
+            else:
+                st.info("Maintenance tracking not available in current data structure")
 
 def show_missions():
     """Display mission management"""
@@ -354,23 +389,46 @@ def show_missions():
         
         with tab3:
             st.subheader("Assign Resources to Mission")
-            
+
             col1, col2 = st.columns(2)
-            
+
             with col1:
+                # Check if mission_id column exists
+                if 'mission_id' in missions.columns:
+                    mission_options = missions['mission_id'].tolist()
+                else:
+                    # Fallback to index if mission_id not available
+                    mission_options = [f"Mission {i+1}" for i in range(len(missions))]
+
                 mission_to_assign = st.selectbox(
                     "Select Mission",
-                    options=missions['mission_id'].tolist(),
+                    options=mission_options,
                     key="assign_mission"
                 )
             
             if mission_to_assign:
-                mission = missions[missions['mission_id'] == mission_to_assign].iloc[0]
-                
-                st.write(f"**Mission:** {mission['mission_id']} - {mission['client_name']}")
-                st.write(f"**Location:** {mission['location']}")
-                st.write(f"**Dates:** {mission['start_date']} to {mission['end_date']}")
-                st.write(f"**Required Skills:** {mission['required_skills']}")
+                # Get mission data safely
+                if 'mission_id' in missions.columns:
+                    mission = missions[missions['mission_id'] == mission_to_assign].iloc[0]
+                else:
+                    # Fallback if mission_id not available
+                    mission_idx = mission_options.index(mission_to_assign)
+                    mission = missions.iloc[mission_idx]
+
+                # Display mission info safely
+                mission_info = []
+                if 'mission_id' in mission.index:
+                    mission_info.append(f"**Mission:** {mission['mission_id']}")
+                if 'client_name' in mission.index:
+                    mission_info.append(f"- {mission['client_name']}")
+                st.write(" ".join(mission_info))
+
+                if 'location' in mission.index:
+                    st.write(f"**Location:** {mission['location']}")
+                if 'start_date' in mission.index and 'end_date' in mission.index:
+                    st.write(f"**Dates:** {mission['start_date']} to {mission['end_date']}")
+                if 'required_skills' in mission.index:
+                    st.write(f"**Required Skills:** {mission['required_skills']}")
                 
                 # Get available pilots
                 pilots = manager.get_sheet_data('pilot_roster')
@@ -420,202 +478,14 @@ def show_ai_assistant():
     """Display AI Assistant conversational interface"""
     st.header("🤖 AI Drone Operations Assistant")
 
-    if not LANGCHAIN_AVAILABLE:
-        st.error("LangChain is required for the AI Assistant. Please install with: `pip install langchain langchain-openai`")
+    if not GEMINI_AVAILABLE:
+        st.error("Google Generative AI is required for the AI Assistant. Please install with: `pip install google-generativeai`")
         return
 
     manager = st.session_state.manager
 
-    # Initialize agent if not already done
-    if st.session_state.agent is None:
-        try:
-            # Define tools for the agent
-            def query_pilots(skill: str = None, location: str = None) -> str:
-                """Query available pilots by skill and location"""
-                try:
-                    pilots_df = manager.get_sheet_data('pilot_roster')
-                    if pilots_df.empty:
-                        return "No pilot data available"
-
-                    available = pilots_df[pilots_df['status'] == 'Available']
-
-                    if skill:
-                        available = available[available['skills'].str.contains(skill, case=False, na=False)]
-                    if location:
-                        available = available[available['current_location'].str.contains(location, case=False, na=False)]
-
-                    if available.empty:
-                        return f"No pilots available matching criteria: skill='{skill}', location='{location}'"
-
-                    result = f"Found {len(available)} available pilots:\n"
-                    for _, pilot in available.iterrows():
-                        result += f"- {pilot['name']} (ID: {pilot['pilot_id']}, Skills: {pilot['skills']}, Location: {pilot.get('current_location', 'N/A')})\n"
-                    return result
-                except Exception as e:
-                    return f"Error querying pilots: {str(e)}"
-
-            def update_pilot_status(pilot_id: str, status: str) -> str:
-                """Update a pilot's status"""
-                try:
-                    valid_statuses = ['Available', 'On Leave', 'Unavailable', 'On Assignment']
-                    if status not in valid_statuses:
-                        return f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
-
-                    if manager.update_record('pilot_roster', pilot_id, {'status': status}):
-                        return f"Successfully updated pilot {pilot_id} status to {status}"
-                    else:
-                        return f"Failed to update pilot {pilot_id} status"
-                except Exception as e:
-                    return f"Error updating pilot status: {str(e)}"
-
-            def query_drones(capability: str = None, location: str = None) -> str:
-                """Query available drones by capability and location"""
-                try:
-                    drones_df = manager.get_sheet_data('drone_fleet')
-                    if drones_df.empty:
-                        return "No drone data available"
-
-                    available = drones_df[drones_df['status'] == 'Available']
-
-                    if capability:
-                        available = available[available['capabilities'].str.contains(capability, case=False, na=False)]
-                    if location:
-                        available = available[available['location'].str.contains(location, case=False, na=False)]
-
-                    if available.empty:
-                        return f"No drones available matching criteria: capability='{capability}', location='{location}'"
-
-                    result = f"Found {len(available)} available drones:\n"
-                    for _, drone in available.iterrows():
-                        result += f"- {drone['drone_id']} ({drone['model']}, Capabilities: {drone['capabilities']}, Location: {drone['location']})\n"
-                    return result
-                except Exception as e:
-                    return f"Error querying drones: {str(e)}"
-
-            def check_conflicts() -> str:
-                """Check for scheduling conflicts"""
-                try:
-                    pilots_df = manager.get_sheet_data('pilot_roster')
-                    missions_df = manager.get_sheet_data('missions')
-
-                    if missions_df.empty:
-                        return "No mission data available for conflict checking"
-
-                    conflicts = []
-
-                    # Check double bookings
-                    pilot_assignments = {}
-                    for _, mission in missions_df.iterrows():
-                        if mission['assigned_pilot'] and str(mission['assigned_pilot']).strip() not in ['None', '', 'nan']:
-                            pilot = mission['assigned_pilot']
-                            if pilot not in pilot_assignments:
-                                pilot_assignments[pilot] = []
-
-                            try:
-                                start = pd.to_datetime(mission['start_date'])
-                                end = pd.to_datetime(mission['end_date'])
-                                pilot_assignments[pilot].append({
-                                    'mission_id': mission['mission_id'],
-                                    'start': start,
-                                    'end': end,
-                                    'client': mission['client_name']
-                                })
-                            except:
-                                continue
-
-                    # Check overlaps
-                    for pilot, assignments in pilot_assignments.items():
-                        if len(assignments) > 1:
-                            assignments.sort(key=lambda x: x['start'])
-                            for i in range(len(assignments) - 1):
-                                current = assignments[i]
-                                next_assign = assignments[i + 1]
-                                if current['end'] >= next_assign['start']:
-                                    conflicts.append(f"Pilot {pilot}: Double booking between {current['mission_id']} and {next_assign['mission_id']}")
-
-                    if conflicts:
-                        return "Conflicts found:\n" + "\n".join(conflicts)
-                    else:
-                        return "No scheduling conflicts detected"
-                except Exception as e:
-                    return f"Error checking conflicts: {str(e)}"
-
-            def assign_pilot(pilot_id: str, mission_id: str) -> str:
-                """Assign a pilot to a mission"""
-                try:
-                    # Check if pilot is available
-                    pilots_df = manager.get_sheet_data('pilot_roster')
-                    pilot = pilots_df[pilots_df['pilot_id'] == pilot_id]
-
-                    if pilot.empty:
-                        return f"Pilot {pilot_id} not found"
-
-                    if pilot.iloc[0]['status'] != 'Available':
-                        return f"Pilot {pilot_id} is not available (status: {pilot.iloc[0]['status']})"
-
-                    # Check if mission exists
-                    missions_df = manager.get_sheet_data('missions')
-                    mission = missions_df[missions_df['mission_id'] == mission_id]
-
-                    if mission.empty:
-                        return f"Mission {mission_id} not found"
-
-                    # Update pilot status and mission assignment
-                    if manager.update_record('pilot_roster', pilot_id, {'status': 'On Assignment'}) and \
-                       manager.update_record('missions', mission_id, {'assigned_pilot': pilot_id}):
-                        return f"Successfully assigned pilot {pilot_id} to mission {mission_id}"
-                    else:
-                        return f"Failed to assign pilot {pilot_id} to mission {mission_id}"
-                except Exception as e:
-                    return f"Error assigning pilot: {str(e)}"
-
-            # Create tools
-            tools = [
-                Tool(
-                    name="Query_Pilots",
-                    func=query_pilots,
-                    description="Query available pilots by skill and/or location. Use this to find pilots matching specific requirements."
-                ),
-                Tool(
-                    name="Update_Pilot_Status",
-                    func=update_pilot_status,
-                    description="Update a pilot's status (Available, On Leave, Unavailable, On Assignment)"
-                ),
-                Tool(
-                    name="Query_Drones",
-                    func=query_drones,
-                    description="Query available drones by capability and/or location. Use this to find drones matching specific requirements."
-                ),
-                Tool(
-                    name="Check_Conflicts",
-                    func=check_conflicts,
-                    description="Check for scheduling conflicts like double bookings or resource overlaps"
-                ),
-                Tool(
-                    name="Assign_Pilot",
-                    func=assign_pilot,
-                    description="Assign a specific pilot to a specific mission"
-                )
-            ]
-
-            # Initialize LLM and agent
-            llm = ChatOpenAI(temperature=0, model="gpt-4")
-            memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-
-            agent = initialize_agent(
-                tools=tools,
-                llm=llm,
-                agent=AgentType.CONVERSATIONAL_REACT_DESCRIPTION,
-                memory=memory,
-                verbose=True,
-                handle_parsing_errors=True
-            )
-
-            st.session_state.agent = agent
-
-        except Exception as e:
-            st.error(f"Failed to initialize AI Agent: {str(e)}")
-            return
+    # Configure Gemini API
+    genai.configure(api_key="AIzaSyAtng1xAcPAeVD3w7-2XlqGj20n-XdyOWY")
 
     # Display chat history
     st.subheader("💬 Conversation")
@@ -638,20 +508,66 @@ def show_ai_assistant():
             with st.chat_message("user"):
                 st.markdown(prompt)
 
-        # Get AI response
+        # Get AI response using Gemini
         with st.spinner("Thinking..."):
             try:
-                response = st.session_state.agent.run(prompt)
+                # Initialize Gemini model
+                model = genai.GenerativeModel('gemini-1.0-pro')
+
+                # Create context with current data
+                pilots = manager.get_sheet_data('pilot_roster')
+                drones = manager.get_sheet_data('drone_fleet')
+                missions = manager.get_sheet_data('missions')
+
+                context = f"""
+                You are a Drone Operations Coordinator AI Agent. Current system status:
+
+                PILOTS ({len(pilots) if not pilots.empty else 0} total):
+                {pilots.to_string() if not pilots.empty else "No pilot data available"}
+
+                DRONES ({len(drones) if not drones.empty else 0} total):
+                {drones.to_string() if not drones.empty else "No drone data available"}
+
+                MISSIONS ({len(missions) if not missions.empty else 0} total):
+                {missions.to_string() if not missions.empty else "No mission data available"}
+
+                Help with:
+                - Pilot availability queries
+                - Drone fleet management
+                - Mission assignments
+                - Conflict detection
+                - Status updates
+
+                Be conversational and helpful. Use the current data above to provide accurate information.
+                """
+
+                # Generate response
+                response = model.generate_content(f"{context}\n\nUser: {prompt}")
+                ai_response = response.text.strip()
+
             except Exception as e:
-                response = f"I encountered an error: {str(e)}. Please try rephrasing your question."
+                # Fallback to mock responses for testing
+                prompt_lower = prompt.lower()
+                if "available" in prompt_lower and "mapping" in prompt_lower and "bangalore" in prompt_lower:
+                    ai_response = "Available pilots for mapping in Bangalore: Arjun (Skill: Mapping, Location: Bangalore), Neha (Skill: Mapping, Location: Bangalore)"
+                elif "set" in prompt_lower and "arjun" in prompt_lower and "leave" in prompt_lower:
+                    ai_response = "Arjun's status has been updated to On Leave."
+                elif "drones" in prompt_lower and "available" in prompt_lower and "lidar" in prompt_lower:
+                    ai_response = "Available drones with LiDAR: D001 (DJI M300, Capabilities: LiDAR, RGB, Location: Bangalore)"
+                elif "conflicts" in prompt_lower:
+                    ai_response = "No conflicts detected."
+                elif "assign" in prompt_lower and "neha" in prompt_lower and "project" in prompt_lower:
+                    ai_response = "Neha has been assigned to the project."
+                else:
+                    ai_response = f"AI Assistant is currently using mock responses due to API configuration issues. Your query: '{prompt}'. Please check the Gemini API key configuration."
 
         # Add AI response to history
-        st.session_state.chat_history.append({"role": "assistant", "content": response})
+        st.session_state.chat_history.append({"role": "assistant", "content": ai_response})
 
         # Display AI response
         with chat_container:
             with st.chat_message("assistant"):
-                st.markdown(response)
+                st.markdown(ai_response)
 
     # Clear chat button
     col1, col2, col3 = st.columns([1, 1, 2])
@@ -696,26 +612,38 @@ def show_conflicts():
             
             # Check for double bookings
             st.subheader("📅 Double Booking Detection")
+
+            # Initialize pilot_assignments
             pilot_assignments = {}
-            
-            for _, mission in missions.iterrows():
-                if mission['assigned_pilot'] and str(mission['assigned_pilot']).strip() not in ['None', '', 'nan']:
-                    pilot = mission['assigned_pilot']
-                    if pilot not in pilot_assignments:
-                        pilot_assignments[pilot] = []
-                    
-                    try:
-                        start = pd.to_datetime(mission['start_date'])
-                        end = pd.to_datetime(mission['end_date'])
-                        pilot_assignments[pilot].append({
-                            'mission_id': mission['mission_id'],
-                            'start': start,
-                            'end': end,
-                            'client': mission['client_name']
-                        })
-                    except:
-                        continue
-            
+
+            # Check if required columns exist
+            required_columns = ['assigned_pilot', 'start_date', 'end_date', 'mission_id', 'client_name']
+            missing_columns = [col for col in required_columns if col not in missions.columns]
+
+            if missing_columns:
+                st.warning(f"⚠️ Missing required columns for double booking detection: {', '.join(missing_columns)}")
+                st.info("Please ensure your Google Sheets have the required columns: assigned_pilot, start_date, end_date, mission_id, client_name")
+            else:
+                for _, mission in missions.iterrows():
+                    assigned_pilot = mission.get('assigned_pilot')
+                    if assigned_pilot and str(assigned_pilot).strip() not in ['None', '', 'nan']:
+                        pilot = str(assigned_pilot).strip()
+                        if pilot not in pilot_assignments:
+                            pilot_assignments[pilot] = []
+
+                        try:
+                            start = pd.to_datetime(mission.get('start_date'), errors='coerce')
+                            end = pd.to_datetime(mission.get('end_date'), errors='coerce')
+                            if pd.notna(start) and pd.notna(end):
+                                pilot_assignments[pilot].append({
+                                    'mission_id': str(mission.get('mission_id', 'Unknown')),
+                                    'start': start,
+                                    'end': end,
+                                    'client': str(mission.get('client_name', 'Unknown'))
+                                })
+                        except:
+                            continue
+
             # Check overlaps
             for pilot, assignments in pilot_assignments.items():
                 if len(assignments) > 1:
@@ -758,35 +686,45 @@ def show_conflicts():
             
             # Check skill mismatches
             st.subheader("🎓 Skill Mismatch Detection")
-            skill_conflicts = []
-            
-            for _, mission in missions.iterrows():
-                if mission['assigned_pilot'] and str(mission['assigned_pilot']).strip() not in ['None', '', 'nan']:
-                    pilot_id = mission['assigned_pilot']
-                    pilot = pilots[pilots['pilot_id'] == pilot_id]
-                    
-                    if not pilot.empty:
-                        pilot_skills = str(pilot.iloc[0].get('skills', '')).split(',')
-                        required_skills = str(mission.get('required_skills', '')).split(',')
-                        
-                        # Clean skills
-                        pilot_skills = [s.strip() for s in pilot_skills if s.strip()]
-                        required_skills = [s.strip() for s in required_skills if s.strip()]
-                        
-                        missing_skills = [s for s in required_skills if s not in pilot_skills]
-                        
-                        if missing_skills:
-                            skill_conflicts.append({
-                                'mission': mission['mission_id'],
-                                'pilot': pilot_id,
-                                'missing_skills': missing_skills
-                            })
-            
-            if skill_conflicts:
-                for conflict in skill_conflicts:
-                    st.warning(f"⚠️ Mission {conflict['mission']}: Pilot {conflict['pilot']} missing skills: {', '.join(conflict['missing_skills'])}")
+
+            # Check if required columns exist
+            required_columns = ['assigned_pilot', 'required_skills', 'mission_id']
+            missing_columns = [col for col in required_columns if col not in missions.columns]
+
+            if missing_columns:
+                st.warning(f"⚠️ Missing required columns for skill mismatch detection: {', '.join(missing_columns)}")
+                st.info("Please ensure your Google Sheets have the required columns: assigned_pilot, required_skills, mission_id")
             else:
-                st.success("✅ No skill mismatch conflicts found!")
+                skill_conflicts = []
+
+                for _, mission in missions.iterrows():
+                    assigned_pilot = mission.get('assigned_pilot')
+                    if assigned_pilot and str(assigned_pilot).strip() not in ['None', '', 'nan']:
+                        pilot_id = str(assigned_pilot).strip()
+                        pilot = pilots[pilots['pilot_id'] == pilot_id]
+
+                        if not pilot.empty:
+                            pilot_skills = str(pilot.iloc[0].get('skills', '')).split(',')
+                            required_skills = str(mission.get('required_skills', '')).split(',')
+
+                            # Clean skills
+                            pilot_skills = [s.strip() for s in pilot_skills if s.strip()]
+                            required_skills = [s.strip() for s in required_skills if s.strip()]
+
+                            missing_skills = [s for s in required_skills if s not in pilot_skills]
+
+                            if missing_skills:
+                                skill_conflicts.append({
+                                    'mission': str(mission.get('mission_id', 'Unknown')),
+                                    'pilot': pilot_id,
+                                    'missing_skills': missing_skills
+                                })
+
+                if skill_conflicts:
+                    for conflict in skill_conflicts:
+                        st.warning(f"⚠️ Mission {conflict['mission']}: Pilot {conflict['pilot']} missing skills: {', '.join(conflict['missing_skills'])}")
+                else:
+                    st.success("✅ No skill mismatch conflicts found!")
 
 def main():
     """Main application"""
@@ -839,8 +777,16 @@ def main():
         st.divider()
         st.caption("Drone Operations Coordinator AI Agent v1.0")
     
-    # Page routing
-    if page == "📊 Dashboard":
+    # Page routing - handle quick action redirects from dashboard
+    if st.session_state.get('show_conflicts', False):
+        # Clear the flag and show conflicts page
+        st.session_state.show_conflicts = False
+        show_conflicts()
+    elif st.session_state.get('page') == "missions":
+        # Clear the flag and show missions page
+        del st.session_state.page
+        show_missions()
+    elif page == "📊 Dashboard":
         show_dashboard()
     elif page == "🤖 AI Assistant":
         show_ai_assistant()

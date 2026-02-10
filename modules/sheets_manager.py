@@ -81,6 +81,9 @@ class GoogleSheetsManager:
             # Convert to DataFrame
             df = pd.DataFrame(records)
 
+            # Apply data type conversions based on sheet type
+            df = self._convert_data_types(df, sheet_name)
+
             # Store in cache
             self.sheets[sheet_name] = {
                 'worksheet': worksheet,
@@ -186,6 +189,66 @@ class GoogleSheetsManager:
         except Exception as e:
             logger.error(f"❌ Failed to add record: {e}")
             return False
+
+    def _convert_data_types(self, df: pd.DataFrame, sheet_name: str) -> pd.DataFrame:
+        """Convert data types based on sheet type to ensure compatibility"""
+        if df.empty:
+            return df
+
+        try:
+            if sheet_name == 'drone_fleet':
+                # Convert numeric columns, handling empty strings
+                numeric_cols = ['max_range', 'weight_capacity', 'flight_hours', 'battery_health']
+                for col in numeric_cols:
+                    if col in df.columns:
+                        # Replace empty strings with NaN, then convert
+                        df[col] = pd.to_numeric(df[col].replace('', pd.NA), errors='coerce')
+
+                # Convert date columns
+                date_cols = ['maintenance_due_date', 'last_maintenance']
+                for col in date_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_datetime(df[col], errors='coerce')
+
+            elif sheet_name == 'pilot_roster':
+                # Convert numeric columns for pilots
+                if 'experience_level' in df.columns:
+                    df['experience_level'] = pd.to_numeric(df['experience_level'].replace('', pd.NA), errors='coerce')
+
+                # Convert date columns
+                date_cols = ['availability_start', 'availability_end', 'last_updated']
+                for col in date_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_datetime(df[col], errors='coerce')
+
+            elif sheet_name == 'missions':
+                # Convert numeric columns for missions
+                if 'priority' in df.columns:
+                    # Priority might be string, keep as is
+                    pass
+
+                # Convert date columns
+                date_cols = ['start_date', 'end_date']
+                for col in date_cols:
+                    if col in df.columns:
+                        df[col] = pd.to_datetime(df[col], errors='coerce')
+
+            # Convert list columns (comma-separated strings to lists)
+            list_cols = {
+                'drone_fleet': ['capabilities'],
+                'pilot_roster': ['skills', 'certifications'],
+                'missions': ['required_skills', 'required_certifications']
+            }
+
+            if sheet_name in list_cols:
+                for col in list_cols[sheet_name]:
+                    if col in df.columns:
+                        df[col] = df[col].apply(lambda x: [s.strip() for s in str(x).split(',') if s.strip()] if x else [])
+
+        except Exception as e:
+            logger.warning(f"Data type conversion failed for {sheet_name}: {e}")
+
+        return df
 
     def _guess_id_column(self, sheet_name: str) -> str:
         """Guess the ID column based on sheet name"""

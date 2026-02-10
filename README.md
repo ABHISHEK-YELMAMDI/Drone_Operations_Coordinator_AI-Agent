@@ -2,11 +2,7 @@
 
 A comprehensive AI-powered system for managing drone operations, pilot assignments, and fleet coordination with real-time Google Sheets integration.
 
-## 🚀 Live Demo
-
-**Access the deployed application:** [Streamlit Cloud Link](https://drone-ops-coordinator.streamlit.app) *(Replace with actual deployed URL)*
-
-## 📋 Overview
+## Overview
 
 This AI agent automates the complex task of drone operations coordination by handling:
 - Pilot roster management and availability tracking
@@ -15,9 +11,9 @@ This AI agent automates the complex task of drone operations coordination by han
 - Conflict detection and resolution
 - Urgent reassignment coordination
 
-## 🏗️ Architecture
+## Architecture
 
-### **System Components**
+### System Components
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
@@ -31,13 +27,13 @@ This AI agent automates the complex task of drone operations coordination by han
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
 
-### **Technology Stack**
+### Technology Stack
 
 - **Frontend:** Streamlit (Python web framework)
 - **Backend:** Python 3.12
 - **Data Storage:** Google Sheets (2-way sync)
-- **AI/ML:** OpenAI GPT-3.5-turbo for conversational interface
-- **APIs:** Google Sheets API, OpenAI API
+- **AI/ML:** Google Gemini AI for conversational interface
+- **APIs:** Google Sheets API, Google Gemini API
 - **Deployment:** Streamlit Cloud
 
 ### **Key Features**
