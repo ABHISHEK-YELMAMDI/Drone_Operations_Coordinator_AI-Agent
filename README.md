@@ -2,6 +2,8 @@
 
 A comprehensive AI-powered system for managing drone operations, pilot assignments, and fleet coordination with real-time Google Sheets integration.
 
+**Access the deployed application:** [Streamlit Cloud Link](https://droneoperationscoordinatorai-agent-fqztnzjfruhrtt5a75wdla.streamlit.app/)
+
 ## Overview
 
 This AI agent automates the complex task of drone operations coordination by handling:
